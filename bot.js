@@ -1,71 +1,119 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const express = require('express');
-const {
-    getUser,
-    updateUser,
-    incrementUserActivity,
-    getLeaderboard,
-    trackInteraction,
-    checkRateLimit,
-    saveData,
-    getUserData,
-    getAnalytics,
-    createBackup,
-    listBackups,
-    restoreBackup
-} = require('./api/_shared-data');
 
 // Bot configuration
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const PORT = process.env.PORT || 3000;
-const WEBHOOK_URL = process.env.WEBHOOK_URL || `https://your-app.onrender.com`;
 
 if (!BOT_TOKEN) {
     console.error('❌ BOT_TOKEN is required in environment variables');
     process.exit(1);
 }
 
-// Initialize bot
-const bot = new TelegramBot(BOT_TOKEN);
-const app = express();
+// Initialize bot with polling
+const bot = new TelegramBot(BOT_TOKEN, {polling: true});
 
-// Middleware
-app.use(express.json());
+console.log('🤖 Bot is starting...');
 
-// Rate limiting middleware
-app.use('/webhook', (req, res, next) => {
-    const clientIP = req.ip || req.connection.remoteAddress;
+// Simple in-memory storage for user activity
+const userActivity = new Map();
+
+// Helper function to get or create user
+function getUser(userId) {
+    if (!userActivity.has(userId)) {
+        userActivity.set(userId, {
+            messageCount: 0,
+            stickerCount: 0,
+            firstName: '',
+            username: ''
+        });
+    }
+    return userActivity.get(userId);
+}
+
+// Handle /start command
+bot.onText(/\/start/, (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const user = getUser(userId);
     
-    if (!checkRateLimit(clientIP, 30, 60000)) {
-        console.log(`🚫 Rate limit exceeded for IP: ${clientIP}`);
-        return res.status(429).json({ error: 'Rate limit exceeded' });
+    // Update user info
+    user.firstName = msg.from.first_name || '';
+    user.username = msg.from.username || '';
+    
+    bot.sendMessage(chatId, `👋 Hello ${user.firstName || 'there'}! I'm your activity tracker bot.\n\n` +
+        '📊 Use /rankings to see the leaderboard\n' +
+        '💬 Send messages and stickers to track your activity!');
+});
+
+// Handle /rankings command
+bot.onText(/\/rankings/, (msg) => {
+    const chatId = msg.chat.id;
+    
+    // Convert user activity to array and sort by total activity
+    const rankings = Array.from(userActivity.entries())
+        .map(([userId, data]) => ({
+            userId,
+            ...data,
+            totalActivity: data.messageCount + data.stickerCount
+        }))
+        .sort((a, b) => b.totalActivity - a.totalActivity)
+        .slice(0, 10); // Top 10 users
+    
+    if (rankings.length === 0) {
+        bot.sendMessage(chatId, '📊 No activity recorded yet! Start chatting to appear on the rankings.');
+        return;
     }
     
-    next();
+    // Create leaderboard message
+    let message = '🏆 *Activity Rankings*\n\n';
+    
+    rankings.forEach((user, index) => {
+        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '🔹';
+        const name = user.firstName || `User ${user.userId}`;
+        
+        message += `${medal} *${index + 1}.* ${name}\n`;
+        message += `   💬 ${user.messageCount} messages | 🎭 ${user.stickerCount} stickers\n`;
+        message += `   📊 Total: ${user.totalActivity} activities\n\n`;
+    });
+    
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
-// Webhook endpoint
-app.post('/webhook', (req, res) => {
-    try {
-        bot.processUpdate(req.body);
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('❌ Webhook error:', error.message);
-        res.sendStatus(500);
+// Track regular messages
+bot.on('message', (msg) => {
+    // Skip commands
+    if (msg.text && msg.text.startsWith('/')) return;
+    
+    const userId = msg.from.id;
+    const user = getUser(userId);
+    
+    // Update user info
+    user.firstName = msg.from.first_name || user.firstName;
+    user.username = msg.from.username || user.username;
+    
+    // Count messages and stickers
+    if (msg.sticker) {
+        user.stickerCount += 1;
+    } else if (msg.text) {
+        user.messageCount += 1;
     }
+    
+    console.log(`📝 Activity updated for user ${userId}:`, {
+        messages: user.messageCount,
+        stickers: user.stickerCount
+    });
 });
 
-// Fallback webhook endpoints
-app.post('/webhook/telegram', (req, res) => {
-    try {
-        bot.processUpdate(req.body);
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('❌ Telegram webhook error:', error.message);
-        res.sendStatus(500);
-    }
+// Error handling
+bot.on('polling_error', (error) => {
+    console.error('❌ Polling error:', error.message);
 });
+
+bot.on('error', (error) => {
+    console.error('❌ Bot error:', error.message);
+});
+
+console.log('✅ Bot is ready and waiting for commands...');
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -192,33 +240,42 @@ bot.on('message', async (msg) => {
         const isCommand = msg.text && msg.text.startsWith('/');
         const isGroupChat = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
         
-        // Always update user info
-        updateUser(userId, {
-            username: msg.from.username,
-            firstName: msg.from.first_name
-        });
+        // DEBUG: Log chat details
+        console.log(`🔍 DEBUG: Chat type: ${msg.chat.type}, isCommand: ${isCommand}, isGroupChat: ${isGroupChat}, text: ${msg.text || 'no text'}`);
         
         // Handle commands (but don't count them as activity)
         if (isCommand) {
             const command = msg.text.split(' ')[0].substring(1);
             trackInteraction(userId, 'command', command);
-            console.log(`🔧 Command /${command} from ${msg.from.first_name || 'Unknown'} (@${msg.from.username || 'no_username'})`);
+            console.log(`🔧 Command /${command} from ${msg.from.first_name || 'Unknown'} (@${msg.from.username || 'no_username'}) - NO POINTS ADDED`);
             await handleCommand(msg, command);
-            return; // Don't count commands as activity
+            return; // Don't count commands as activity - EXIT HERE!
         }
         
         // Only track activity for group messages (not commands, not private messages)
         if (isGroupChat && !isCommand) {
+            // Update user info only when counting activity
+            updateUser(userId, {
+                username: msg.from.username,
+                firstName: msg.from.first_name
+            });
+            
             // Track interaction for analytics
             trackInteraction(userId, messageType);
             
             // Increment activity for leaderboard
             incrementUserActivity(userId, messageType);
             
-            console.log(`📨 ${messageType} from ${msg.from.first_name || 'Unknown'} (@${msg.from.username || 'no_username'}) in group: ${msg.chat.title || 'Unknown Group'}`);
+            console.log(`📨 ${messageType} from ${msg.from.first_name || 'Unknown'} (@${msg.from.username || 'no_username'}) in group: ${msg.chat.title || 'Unknown Group'} - POINTS ADDED ✅`);
         } else if (!isGroupChat && !isCommand) {
-            // Log private messages but don't count them
-            console.log(`💬 Private ${messageType} from ${msg.from.first_name || 'Unknown'} (not counted for leaderboard)`);
+            // Update user info for private messages but don't count activity
+            updateUser(userId, {
+                username: msg.from.username,
+                firstName: msg.from.first_name
+            });
+            console.log(`💬 Private ${messageType} from ${msg.from.first_name || 'Unknown'} (not counted for leaderboard) - NO POINTS ADDED`);
+        } else {
+            console.log(`🚫 Message ignored - isGroupChat: ${isGroupChat}, isCommand: ${isCommand} - NO POINTS ADDED`);
         }
         
     } catch (error) {
@@ -234,10 +291,16 @@ async function handleCommand(msg, command) {
     switch (command) {
         case 'start':
             await bot.sendMessage(chatId, 
-                `🎉 Welcome to the Activity Tracker Bot!\n\n` +
-                `I track messages and stickers to create leaderboards.\n\n` +
-                `📊 Use /leaderboard to see rankings\n` +
-                `📈 Use /stats to see your statistics\n` +
+                `🎉 Welcome to the Activity Tracker Bot!
+
+` +
+                `I track messages and stickers to create rankings.
+
+` +
+                `📊 Use /rankings to see rankings
+` +
+                `📈 Use /myprogress to see your progress
+` +
                 `ℹ️ Use /help for more commands`
             );
             break;
@@ -245,9 +308,10 @@ async function handleCommand(msg, command) {
         case 'help':
             await bot.sendMessage(chatId,
                 `🤖 **Bot Commands**\n\n` +
-                `🏆 /leaderboard - View activity rankings\n` +
-                `📊 /stats - Your personal statistics\n` +
-                `ℹ️ /info - Bot information\n` +
+                `**🏆 Rankings & Progress:**\n` +
+                `🏆 /rankings - View activity rankings\n` +
+                `📊 /myprogress - Your personal progress\n` +
+                `ℹ️ /info - Bot information\n\n` +
                 `📈 /analytics - Bot analytics (admin)\n` +
                 `💾 /backup - Create data backup (admin)\n` +
                 `🔄 /save - Force save data\n\n` +
@@ -256,29 +320,48 @@ async function handleCommand(msg, command) {
             );
             break;
             
-        case 'leaderboard':
-            const leaderboard = getLeaderboard(10);
-            if (leaderboard.length === 0) {
-                await bot.sendMessage(chatId, '📊 No activity recorded yet! Start chatting to appear on the leaderboard.');
-            } else {
-                let message = '🏆 **Activity Leaderboard**\n\n';
+        case 'rankings':
+            try {
+                console.log('Fetching leaderboard...');
+                const leaderboard = getLeaderboard(10);
+                console.log('Leaderboard data:', JSON.stringify(leaderboard, null, 2));
+                
+                if (leaderboard.length === 0) {
+                    await bot.sendMessage(chatId, '📊 No activity recorded yet! Start chatting to appear on the rankings.');
+                    return;
+                }
+                
+                // Build a simple text-based leaderboard
+                let message = '🏆 Activity Rankings\n\n';
+                
                 leaderboard.forEach(user => {
-                    const medal = user.rank === 1 ? '🥇' : user.rank === 2 ? '🥈' : user.rank === 3 ? '🥉' : '🏅';
-                    const name = user.firstName || user.username || `User ${user.id}`;
-                    message += `${medal} **${user.rank}.** ${name}\n`;
-                    message += `   💬 ${user.messageCount} messages | 🎭 ${user.stickerCount} stickers\n`;
-                    message += `   📊 Total: ${user.totalActivity} activities\n\n`;
+                    const medal = user.rank === 1 ? '🥇' : user.rank === 2 ? '🥈' : user.rank === 3 ? '🥉' : '🔹';
+                    let name = user.firstName || user.username || `User ${user.id}`;
+                    
+                    // Remove any markdown characters
+                    name = name.replace(/[\_*\[\]()~`>#+\-=\|{}.!]/g, '');
+                    
+                    message += `${medal} ${user.rank}. ${name}\n`;
+                    message += `   💬 ${user.messageCount || 0} messages | 🎭 ${user.stickerCount || 0} stickers\n`;
+                    message += `   📊 Total: ${user.totalActivity || 0} activities\n\n`;
                 });
-                await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+                
+                console.log('Sending leaderboard message...');
+                await bot.sendMessage(chatId, message);
+                console.log('Leaderboard sent successfully');
+                
+            } catch (error) {
+                console.error('❌ Error in rankings command:', error);
+                await bot.sendMessage(chatId, '❌ Sorry, there was an error displaying the rankings. Please try again later.');
             }
             break;
             
-        case 'stats':
+        case 'myprogress':
             const user = getUser(userId);
             const rank = getLeaderboard().findIndex(u => u.id === userId) + 1;
             
             await bot.sendMessage(chatId,
-                `📊 **Your Statistics**\n\n` +
+                `📊 **Your Progress**\n\n` +
                 `👤 Name: ${user.firstName || 'Unknown'}\n` +
                 `🏆 Rank: ${rank > 0 ? `#${rank}` : 'Unranked'}\n` +
                 `💬 Messages: ${user.messageCount}\n` +
@@ -347,7 +430,11 @@ async function handleCommand(msg, command) {
             break;
             
         default:
-            await bot.sendMessage(chatId, '❓ Unknown command. Use /help to see available commands.');
+            // Only respond to unknown commands in private chats, ignore in groups
+            if (msg.chat.type === 'private') {
+                await bot.sendMessage(chatId, '❓ Unknown command. Use /help to see available commands.');
+            }
+            // Silently ignore unknown commands in groups (they might be for other bots)
     }
 }
 
@@ -402,16 +489,9 @@ app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🤖 Bot token: ${BOT_TOKEN.substring(0, 10)}...`);
     
-    // Set webhook in production
-    if (process.env.NODE_ENV === 'production' && WEBHOOK_URL) {
-        bot.setWebHook(`${WEBHOOK_URL}/webhook`)
-            .then(() => console.log('✅ Webhook set successfully'))
-            .catch(err => console.error('❌ Webhook error:', err.message));
-    } else {
-        // Use polling in development
-        console.log('🔄 Starting polling mode...');
-        bot.startPolling({ restart: true });
-    }
+    // Use polling in development
+    console.log('🔄 Starting polling mode...');
+    bot.startPolling({ restart: true });
 });
 
 console.log('🎉 Telegram Activity Tracker Bot started!');
@@ -419,3 +499,7 @@ console.log('📊 Features: Activity tracking, Leaderboards, Analytics, Backups,
 console.log('🔧 Ready to track user interactions!');
 
 module.exports = { bot, app };
+
+// ✅ Set the webhook
+bot.setWebHook(`${WEBHOOK_URL}/webhook`);
+console.log(`✅ Webhook set to: ${WEBHOOK_URL}/webhook`);
