@@ -1,6 +1,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
+const db = require('./db');
 
 // Initialize express for health checks
 const app = express();
@@ -76,8 +77,8 @@ const startPolling = () => {
 // Start the bot
 startPolling();
 
-// Simple storage for user activity
-const users = new Map();
+// Initialize database
+db.initDB().catch(console.error);
 
 // Helper function to get user display name
 function getUserDisplayName(user) {
@@ -88,130 +89,111 @@ function getUserDisplayName(user) {
 }
 
 // Handle /start command
-bot.onText(/\/start/, (msg) => {
+bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const user = msg.from;
-    const userId = user.id;
     const name = user.first_name || 'there';
     
-    // Initialize user if not exists
-    if (!users.has(userId)) {
-        users.set(userId, {
-            messages: 0,
-            stickers: 0,
-            username: user.username || '',
-            firstName: user.first_name || '',
-            lastName: user.last_name || ''
-        });
-    } else {
-        // Update user info if exists
-        const userData = users.get(userId);
-        userData.username = user.username || userData.username;
-        userData.firstName = user.first_name || userData.firstName;
-        userData.lastName = user.last_name || userData.lastName;
+    try {
+        // Create or update user in database
+        await db.createOrUpdateUser(user);
+        
+        await bot.sendMessage(chatId, `👋 Hello ${name}! I'm your activity tracker bot.\n\n` +
+            '📊 Use /rankings to see the leaderboard\n' +
+            '📈 Use /myprogress to see your stats\n' +
+            '💬 Send me messages or stickers!');
+    } catch (error) {
+        console.error('Error in /start command:', error);
+        await bot.sendMessage(chatId, '⚠️ An error occurred. Please try again later.');
     }
-    
-    bot.sendMessage(chatId, `👋 Hello ${name}! I'm your activity tracker bot.\n\n` +
-        '📊 Use /rankings to see the leaderboard\n' +
-        '📈 Use /myprogress to see your stats\n' +
-        '💬 Send me messages or stickers!');
 });
 
 // Handle /myprogress command
-bot.onText(/\/myprogress/, (msg) => {
+bot.onText(/\/myprogress/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     
-    if (!users.has(userId)) {
-        bot.sendMessage(chatId, "You haven't sent any messages or stickers yet!");
-        return;
+    try {
+        const user = await db.getUser(userId);
+        
+        if (!user) {
+            await bot.sendMessage(chatId, "You haven't sent any messages or stickers yet!");
+            return;
+        }
+        
+        const name = user.first_name || `User ${userId}`;
+        const total = user.message_count + user.sticker_count;
+        
+        let message = `📊 *Your Activity Stats*\n\n`;
+        message += `👤 *Name:* ${name}\n`;
+        if (user.username) message += `🔗 *Username:* @${user.username}\n`;
+        message += `\n📈 *Activity Summary*\n`;
+        message += `💬 *Messages:* ${user.message_count}\n`;
+        message += `🎭 *Stickers:* ${user.sticker_count}\n`;
+        message += `🏆 *Total Activity:* ${total}\n`;
+        message += `⏱️ *Last Active:* ${new Date(user.last_activity).toLocaleString()}`;
+        
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('Error in /myprogress command:', error);
+        await bot.sendMessage(chatId, '⚠️ An error occurred while fetching your stats.');
     }
-    
-    const user = users.get(userId);
-    const name = user.firstName || `User ${userId}`;
-    const total = user.messages + user.stickers;
-    
-    let message = `📊 *Your Activity Stats*\n\n`;
-    message += `👤 *Name:* ${name}\n`;
-    if (user.username) message += `🔗 *Username:* @${user.username}\n`;
-    message += `\n📈 *Activity Summary*\n`;
-    message += `💬 *Messages:* ${user.messages}\n`;
-    message += `🎭 *Stickers:* ${user.stickers}\n`;
-    message += `🏆 *Total Activity:* ${total}`;
-    
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
 // Handle /rankings command
-bot.onText(/\/rankings/, (msg) => {
+bot.onText(/\/rankings/, async (msg) => {
     const chatId = msg.chat.id;
     
-    if (users.size === 0) {
-        bot.sendMessage(chatId, '📊 No activity recorded yet! Send me a message first.');
-        return;
-    }
-    
-    // Create leaderboard
-    const leaderboard = Array.from(users.entries())
-        .map(([userId, data]) => ({
-            userId,
-            ...data,
-            total: data.messages + data.stickers
-        }))
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 10);
-    
-    let message = '🏆 *Leaderboard*\n\n';
-    leaderboard.forEach((user, index) => {
-        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '🔹';
-        const name = user.firstName || `User ${user.userId}`;
+    try {
+        const leaderboard = await db.getLeaderboard(10);
         
-        message += `${medal} *${index + 1}.* ${name}`;
-        if (user.username) message += ` (@${user.username})`;
-        message += `\n`;
-        message += `   💬 ${user.messages} messages | 🎭 ${user.stickers} stickers\n`;
-        message += `   📊 Total: ${user.total}\n\n`;
-    });
-    
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        if (leaderboard.length === 0) {
+            await bot.sendMessage(chatId, '📊 No activity recorded yet! Send me a message first.');
+            return;
+        }
+        
+        let message = '🏆 *Leaderboard*\n\n';
+        leaderboard.forEach((user, index) => {
+            const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '🔹';
+            const name = user.first_name || `User ${user.id}`;
+            
+            message += `${medal} *${user.rank}.* ${name}`;
+            if (user.username) message += ` (@${user.username})`;
+            message += `\n`;
+            message += `   💬 ${user.message_count} messages | 🎭 ${user.sticker_count} stickers\n`;
+            message += `   📊 Total: ${user.total_activity}\n\n`;
+        });
+        
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('Error in /rankings command:', error);
+        await bot.sendMessage(chatId, '⚠️ An error occurred while fetching the leaderboard.');
+    }
 });
 
 // Track messages
-bot.on('message', (msg) => {
+bot.on('message', async (msg) => {
     // Skip commands
     if (msg.text && msg.text.startsWith('/')) return;
     
-    const userId = msg.from.id;
-    const userInfo = msg.from;
+    const user = msg.from;
     
-    // Initialize user if not exists
-    if (!users.has(userId)) {
-        users.set(userId, {
-            messages: 0,
-            stickers: 0,
-            username: userInfo.username || '',
-            firstName: userInfo.first_name || '',
-            lastName: userInfo.last_name || ''
-        });
-    } else {
-        // Update user info if exists
-        const user = users.get(userId);
-        user.username = userInfo.username || user.username;
-        user.firstName = userInfo.first_name || user.firstName;
-        user.lastName = userInfo.last_name || user.lastName;
+    try {
+        // Create or update user in database
+        await db.createOrUpdateUser(user);
+        
+        // Update activity count
+        if (msg.sticker) {
+            await db.incrementStickerCount(user.id);
+        } else if (msg.text) {
+            await db.incrementMessageCount(user.id);
+        }
+        
+        const name = user.first_name || `User ${user.id}`;
+        console.log(`📝 Activity: ${name} - ${msg.sticker ? 'Sticker' : 'Message'} sent`);
+    } catch (error) {
+        console.error('Error processing message:', error);
     }
-    
-    const user = users.get(userId);
-    
-    // Count messages and stickers
-    if (msg.sticker) {
-        user.stickers += 1;
-    } else if (msg.text) {
-        user.messages += 1;
-    }
-    
-    const name = user.firstName || `User ${userId}`;
-    console.log(`📝 Activity: ${name} - Messages: ${user.messages}, Stickers: ${user.stickers}`);
 });
 
 // Error handling
