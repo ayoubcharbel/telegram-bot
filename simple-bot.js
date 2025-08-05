@@ -25,30 +25,47 @@ if (!BOT_TOKEN) {
     process.exit(1);
 }
 
-// Initialize bot with polling
+// Bot configuration with instance tracking
 console.log('🤖 Starting simple bot...');
 
-// Bot configuration with retry logic
+// Track if we're the active instance
+let isActiveInstance = false;
+let pollingInterval = null;
+const INSTANCE_CHECK_INTERVAL = 10000; // 10 seconds
+const MAX_RETRIES = 5;
+let retryCount = 0;
+
+// Create bot instance without auto-polling
 const bot = new TelegramBot(BOT_TOKEN, {
-    polling: {
-        autoStart: false, // We'll start polling manually after setup
-        params: {
-            timeout: 30,
-            limit: 100,
-            allowed_updates: ['message', 'callback_query']
-        },
-        retryTimeout: 5000, // Retry after 5 seconds on error
-        request: {
-            proxy: process.env.PROXY || null
-        }
+    polling: false, // We'll handle polling manually
+    request: {
+        proxy: process.env.PROXY || null
     }
 });
+
+// Function to safely stop polling
+const stopPolling = () => {
+    if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+    }
+    bot.stopPolling();
+    isActiveInstance = false;
+    console.log('🛑 Polling stopped');
+};
 
 // Handle bot errors
 bot.on('polling_error', (error) => {
     console.error('🔴 Polling error:', error.message);
     if (error.code === 409) {
-        console.log('⚠️  Another bot instance is running. This is normal in development.');
+        console.log('⚠️  Conflict detected - another instance might be running');
+        isActiveInstance = false;
+        retryCount++;
+        
+        if (retryCount >= MAX_RETRIES) {
+            console.error(`❌ Max retries (${MAX_RETRIES}) reached. Giving up.`);
+            process.exit(1);
+        }
     }
 });
 
@@ -57,25 +74,62 @@ process.on('unhandledRejection', (error) => {
     console.error('🔴 Unhandled promise rejection:', error);
 });
 
-// Start polling with error handling
-const startPolling = () => {
-    console.log('🔄 Starting bot polling...');
-    bot.startPolling({
-        restart: true,
-        callback: (error) => {
-            if (error) {
-                console.error('🔴 Failed to start polling:', error.message);
-                console.log('🔄 Retrying in 5 seconds...');
-                setTimeout(startPolling, 5000);
-            } else {
-                console.log('✅ Bot polling started successfully');
+// Clean up on exit
+process.on('SIGINT', stopPolling);
+process.on('SIGTERM', stopPolling);
+
+// Function to start polling with safety checks
+const startPolling = async () => {
+    try {
+        console.log('🔄 Attempting to start polling...');
+        
+        // Stop any existing polling
+        stopPolling();
+        
+        // Start a new polling instance
+        await bot.startPolling({
+            restart: true,
+            polling: {
+                interval: 300, // ms between polling requests
+                autoStart: true,
+                params: {
+                    timeout: 60,
+                    limit: 100,
+                    allowed_updates: ['message', 'callback_query']
+                }
             }
+        });
+        
+        isActiveInstance = true;
+        retryCount = 0;
+        console.log('✅ Successfully started polling');
+        
+        // Periodically check if we're still the active instance
+        pollingInterval = setInterval(() => {
+            if (!isActiveInstance) {
+                console.log('⚠️  Lost active instance status, stopping polling...');
+                stopPolling();
+                process.exit(0);
+            }
+        }, INSTANCE_CHECK_INTERVAL);
+        
+    } catch (error) {
+        console.error('❌ Failed to start polling:', error.message);
+        
+        if (retryCount < MAX_RETRIES) {
+            const delay = Math.min(1000 * Math.pow(2, retryCount), 30000); // Exponential backoff
+            console.log(`🔄 Retrying in ${delay/1000} seconds... (${retryCount + 1}/${MAX_RETRIES})`);
+            setTimeout(startPolling, delay);
+            retryCount++;
+        } else {
+            console.error(`❌ Max retries (${MAX_RETRIES}) reached. Exiting.`);
+            process.exit(1);
         }
-    });
+    }
 };
 
 // Start the bot
-startPolling();
+startPolling().catch(console.error);
 
 // Initialize database
 db.initDB().catch(console.error);
