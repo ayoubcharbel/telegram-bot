@@ -10,7 +10,11 @@ if (!BOT_TOKEN) {
 }
 
 // Initialize bot with polling
-const bot = new TelegramBot(BOT_TOKEN, {polling: true});
+// Initialize bot without polling to prevent conflicts
+// Polling is handled in simple-bot.js
+const bot = new TelegramBot(BOT_TOKEN, {polling: false});
+
+console.log('ℹ️  bot.js loaded in non-polling mode. Use simple-bot.js for polling.');
 
 console.log('🤖 Bot is starting...');
 
