@@ -1,5 +1,20 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
+const express = require('express');
+
+// Initialize express for health checks
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
+// Start the server
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
 
 // Bot configuration
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -11,7 +26,23 @@ if (!BOT_TOKEN) {
 
 // Initialize bot with polling
 console.log('🤖 Starting simple bot...');
-const bot = new TelegramBot(BOT_TOKEN, {polling: true});
+const bot = new TelegramBot(BOT_TOKEN, {
+    polling: true,
+    request: {
+        proxy: process.env.PROXY || null
+    }
+});
+
+// Handle bot errors
+bot.on('polling_error', (error) => {
+    console.error('Polling error:', error.message);    
+});
+
+process.on('unhandledRejection', (error) => {
+    console.error('Unhandled promise rejection:', error);
+});
+
+console.log('✅ Bot initialized with polling');
 
 // Simple storage for user activity
 const users = new Map();

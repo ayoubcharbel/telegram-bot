@@ -4,8 +4,8 @@
   "description": "",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "node bot.js",
+    "start": "node simple-bot.js",
+    "dev": "node simple-bot.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
