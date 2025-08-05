@@ -189,26 +189,36 @@ bot.on('message', async (msg) => {
         const userId = msg.from.id.toString();
         const chatId = msg.chat.id;
         const messageType = getMessageType(msg);
+        const isCommand = msg.text && msg.text.startsWith('/');
+        const isGroupChat = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
         
-        // Track interaction
-        trackInteraction(userId, messageType);
-        
-        // Update user info
+        // Always update user info
         updateUser(userId, {
             username: msg.from.username,
             firstName: msg.from.first_name
         });
         
-        // Increment activity
-        incrementUserActivity(userId, messageType);
-        
-        console.log(`📨 ${messageType} from ${msg.from.first_name || 'Unknown'} (@${msg.from.username || 'no_username'})`);
-        
-        // Handle commands
-        if (msg.text && msg.text.startsWith('/')) {
+        // Handle commands (but don't count them as activity)
+        if (isCommand) {
             const command = msg.text.split(' ')[0].substring(1);
             trackInteraction(userId, 'command', command);
+            console.log(`🔧 Command /${command} from ${msg.from.first_name || 'Unknown'} (@${msg.from.username || 'no_username'})`);
             await handleCommand(msg, command);
+            return; // Don't count commands as activity
+        }
+        
+        // Only track activity for group messages (not commands, not private messages)
+        if (isGroupChat && !isCommand) {
+            // Track interaction for analytics
+            trackInteraction(userId, messageType);
+            
+            // Increment activity for leaderboard
+            incrementUserActivity(userId, messageType);
+            
+            console.log(`📨 ${messageType} from ${msg.from.first_name || 'Unknown'} (@${msg.from.username || 'no_username'}) in group: ${msg.chat.title || 'Unknown Group'}`);
+        } else if (!isGroupChat && !isCommand) {
+            // Log private messages but don't count them
+            console.log(`💬 Private ${messageType} from ${msg.from.first_name || 'Unknown'} (not counted for leaderboard)`);
         }
         
     } catch (error) {
