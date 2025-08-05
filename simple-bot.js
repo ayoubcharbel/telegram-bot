@@ -26,23 +26,55 @@ if (!BOT_TOKEN) {
 
 // Initialize bot with polling
 console.log('🤖 Starting simple bot...');
+
+// Bot configuration with retry logic
 const bot = new TelegramBot(BOT_TOKEN, {
-    polling: true,
-    request: {
-        proxy: process.env.PROXY || null
+    polling: {
+        autoStart: false, // We'll start polling manually after setup
+        params: {
+            timeout: 30,
+            limit: 100,
+            allowed_updates: ['message', 'callback_query']
+        },
+        retryTimeout: 5000, // Retry after 5 seconds on error
+        request: {
+            proxy: process.env.PROXY || null
+        }
     }
 });
 
 // Handle bot errors
 bot.on('polling_error', (error) => {
-    console.error('Polling error:', error.message);    
+    console.error('🔴 Polling error:', error.message);
+    if (error.code === 409) {
+        console.log('⚠️  Another bot instance is running. This is normal in development.');
+    }
 });
 
+// Handle unhandled rejections
 process.on('unhandledRejection', (error) => {
-    console.error('Unhandled promise rejection:', error);
+    console.error('🔴 Unhandled promise rejection:', error);
 });
 
-console.log('✅ Bot initialized with polling');
+// Start polling with error handling
+const startPolling = () => {
+    console.log('🔄 Starting bot polling...');
+    bot.startPolling({
+        restart: true,
+        callback: (error) => {
+            if (error) {
+                console.error('🔴 Failed to start polling:', error.message);
+                console.log('🔄 Retrying in 5 seconds...');
+                setTimeout(startPolling, 5000);
+            } else {
+                console.log('✅ Bot polling started successfully');
+            }
+        }
+    });
+};
+
+// Start the bot
+startPolling();
 
 // Simple storage for user activity
 const users = new Map();
