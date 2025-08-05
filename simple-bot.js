@@ -199,29 +199,70 @@ bot.onText(/\/rankings/, async (msg) => {
     const chatId = msg.chat.id;
     
     try {
-        const leaderboard = await db.getLeaderboard(10);
+        console.log('📊 Fetching leaderboard...');
         
-        if (leaderboard.length === 0) {
+        // Test database connection first
+        try {
+            await db.pool.query('SELECT 1');
+            console.log('✅ Database connection test successful');
+        } catch (dbError) {
+            console.error('❌ Database connection error:', dbError);
+            throw new Error(`Database connection failed: ${dbError.message}`);
+        }
+        
+        const leaderboard = await db.getLeaderboard(10);
+        console.log('📋 Leaderboard data:', JSON.stringify(leaderboard, null, 2));
+        
+        if (!leaderboard || leaderboard.length === 0) {
+            console.log('ℹ️ No leaderboard data found');
             await bot.sendMessage(chatId, '📊 No activity recorded yet! Send me a message first.');
             return;
         }
         
         let message = '🏆 *Leaderboard*\n\n';
-        leaderboard.forEach((user, index) => {
-            const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '🔹';
-            const name = user.first_name || `User ${user.id}`;
-            
-            message += `${medal} *${user.rank}.* ${name}`;
-            if (user.username) message += ` (@${user.username})`;
-            message += `\n`;
-            message += `   💬 ${user.message_count} messages | 🎭 ${user.sticker_count} stickers\n`;
-            message += `   📊 Total: ${user.total_activity}\n\n`;
+        
+        leaderboard.forEach((user) => {
+            try {
+                const medal = user.rank === 1 ? '🥇' : user.rank === 2 ? '🥈' : user.rank === 3 ? '🥉' : '🔹';
+                const name = user.first_name || user.last_name || `User ${user.id}`;
+                const username = user.username ? `(@${user.username})` : '';
+                const total = (user.message_count || 0) + (user.sticker_count || 0);
+                
+                message += `${medal} *${user.rank}.* ${name} ${username}\n`;
+                message += `   💬 ${user.message_count || 0} messages | 🎭 ${user.sticker_count || 0} stickers\n`;
+                message += `   📊 Total: ${total}\n\n`;
+            } catch (formatError) {
+                console.error('Error formatting user entry:', formatError);
+                console.error('Problematic user data:', JSON.stringify(user, null, 2));
+            }
         });
         
-        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        // Add timestamp
+        message += `\n_Last updated: ${new Date().toLocaleString()}_`;
+        
+        await bot.sendMessage(chatId, message, { 
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+        });
+        
     } catch (error) {
-        console.error('Error in /rankings command:', error);
-        await bot.sendMessage(chatId, '⚠️ An error occurred while fetching the leaderboard.');
+        console.error('❌ Error in /rankings command:', error);
+        const errorMessage = error.message || 'Unknown error occurred';
+        
+        // Send detailed error to admin (you)
+        if (process.env.ADMIN_CHAT_ID) {
+            await bot.sendMessage(
+                process.env.ADMIN_CHAT_ID,
+                `❌ Leaderboard Error:\n${errorMessage}\n\nStack Trace:\n${error.stack}`
+            );
+        }
+        
+        // Send user-friendly error
+        await bot.sendMessage(
+            chatId,
+            '⚠️ Oops! Something went wrong while fetching the leaderboard. ' +
+            'The issue has been reported. Please try again later.'
+        );
     }
 });
 
