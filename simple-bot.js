@@ -128,11 +128,28 @@ const startPolling = async () => {
     }
 };
 
-// Start the bot
-startPolling().catch(console.error);
+// Initialize database first, then start the bot
+async function initializeApp() {
+  try {
+    console.log('🚀 Starting bot initialization...');
+    
+    // Initialize database
+    console.log('🔄 Initializing database...');
+    await db.initDB();
+    
+    // Start the bot
+    console.log('🤖 Starting bot polling...');
+    await startPolling();
+    
+    console.log('✅ Bot is now running!');
+  } catch (error) {
+    console.error('❌ Failed to initialize application:', error);
+    process.exit(1);
+  }
+}
 
-// Initialize database
-db.initDB().catch(console.error);
+// Start the application
+initializeApp();
 
 // Helper function to get user display name
 function getUserDisplayName(user) {

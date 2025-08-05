@@ -1,16 +1,50 @@
 const { Pool } = require('pg');
 
-// Database configuration
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/telegram_bot',
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+// Database configuration with better error handling
+let pool;
+
+function initializePool() {
+  if (!process.env.DATABASE_URL) {
+    console.error('❌ DATABASE_URL is not set! Please set this environment variable.');
+    process.exit(1);
+  }
+
+  console.log('🔌 Initializing database connection...');
+  console.log('📡 Database host:', new URL(process.env.DATABASE_URL).hostname);
+  
+  return new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false // Required for Render's PostgreSQL
+    },
+    // Add connection timeout
+    connectionTimeoutMillis: 5000,
+    idleTimeoutMillis: 30000,
+    max: 10
+  });
+}
+
+// Initialize the pool
+pool = initializePool();
+
+// Handle connection errors
+pool.on('error', (err) => {
+  console.error('❌ Unexpected error on idle client', err);
+  process.exit(-1);
 });
 
 // Initialize database tables
 async function initDB() {
+  const client = await pool.connect().catch(err => {
+    console.error('❌ Failed to connect to database:', err);
+    throw new Error(`Database connection failed: ${err.message}`);
+  });
+
   try {
+    console.log('🔄 Creating tables if they do not exist...');
+    
     // Create users table if it doesn't exist
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id BIGINT PRIMARY KEY,
         username VARCHAR(255),
@@ -26,6 +60,8 @@ async function initDB() {
   } catch (error) {
     console.error('❌ Error initializing database:', error);
     throw error;
+  } finally {
+    client.release();
   }
 }
 
